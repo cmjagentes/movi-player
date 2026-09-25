@@ -1,5 +1,34 @@
 <div align="center">
 
+
+## Precise host-driven annotation APIs
+
+The custom element exposes two low-level APIs for applications that need frame-accurate annotation or evidence capture without using Movi's built-in controls:
+
+```ts
+import type { MoviElement, MoviCapturedFrame } from "movi-player/element";
+
+const player = document.querySelector("movi-player") as MoviElement;
+
+// Finite targets are clamped to the active media bounds. Rapid calls keep the
+// active seek and coalesce the queued work so the newest target runs next.
+const settledSeconds = await player.seekTo(12.4);
+
+// Resolves only after the current frame can be captured. The returned bitmap is
+// caller-owned and must be closed.
+const captured: MoviCapturedFrame | null = await player.captureFrame();
+try {
+  if (captured) {
+    console.log(captured.width, captured.height, captured.mediaTime);
+  }
+} finally {
+  captured?.image.close();
+}
+```
+
+`captureFrame()` performs no download or image encoding. It preserves Movi's hardware-decoder black-readback fallback by copying the retained decoded frame when the canvas readback is blank. The existing Snapshot control uses the same capture path and performs PNG encoding only for the user-requested download.
+
+
 <img src="docs/images/banner.png" alt="Movi Player" width="100%" />
 
 ### Play any video format directly in the browser.
