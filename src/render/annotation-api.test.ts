@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   ANNOTATION_MAX_PLAYBACK_RATE,
+  ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS,
   captureOwnedAnnotationFrame,
   CoalescedSeekQueue,
   executeSettledSeek,
@@ -254,6 +255,33 @@ describe("settled annotation seek contract", () => {
     settlePresented(4.26);
     await expect(promise).resolves.toBe(4.26);
     expect(resolved).toBe(true);
+  });
+
+  test("rejects a presented frame outside the 100ms annotation seek boundary", async () => {
+    expect(ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS).toBe(0.1);
+    const events = new EventTarget();
+    const abort = new AbortController();
+    let currentTime = 7;
+
+    const promise = executeSettledSeek(
+      7,
+      abort.signal,
+      {
+        currentTime: () => currentTime,
+        setCurrentTime: (target) => {
+          currentTime = target;
+        },
+        addEventListener: (type, listener) =>
+          events.addEventListener(type, listener),
+        removeEventListener: (type, listener) =>
+          events.removeEventListener(type, listener),
+        waitForPresentedFrame: async () => 6.8,
+      },
+      1_000,
+    );
+
+    events.dispatchEvent(new Event("seeked"));
+    await expect(promise).rejects.toThrow("outside");
   });
 
   test("rejects an outstanding seek when the source/element is destroyed", async () => {
