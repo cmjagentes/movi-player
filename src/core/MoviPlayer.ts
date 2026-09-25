@@ -4322,6 +4322,9 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       `Seek completion at ${time.toFixed(3)}s (target: ${seekTarget.toFixed(3)}s)`,
     );
 
+    const shouldResumeAfterSeek =
+      this.wasPlayingBeforeSeek || this.wasPlayingBeforeRebuffer;
+
     // Sync correction: Match clock to actual video/audio start time.
     //
     // When video arrives late (hardware decode lag, or no keyframe at the
@@ -4343,7 +4346,7 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       let syncTime = time;
       let syncedToAudio = false;
 
-      if (this.pendingAudioPackets.length > 0) {
+      if (shouldResumeAfterSeek && this.pendingAudioPackets.length > 0) {
         const earliestAudioTime = Math.min(
           ...this.pendingAudioPackets.map((p) => p.timestamp)
         );
@@ -4407,7 +4410,7 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
 
     // Transition to final state
     if (
-      (this.wasPlayingBeforeSeek || this.wasPlayingBeforeRebuffer) &&
+      shouldResumeAfterSeek &&
       forcedWithoutFrame
     ) {
       // Wanted to resume, but the forced timeout fired before any video frame
@@ -4448,7 +4451,7 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       // the playhead onto the next GOP if no frame lands — the automated form of
       // the manual seek that recovers it.
       this.armBlackFrameWatchdog(seekTarget);
-    } else if (this.wasPlayingBeforeSeek || this.wasPlayingBeforeRebuffer) {
+    } else if (shouldResumeAfterSeek) {
       // Consume the resume intent so it doesn't leak into the next seek. It's
       // never reset elsewhere, so a stale `true` would make a later paused
       // user-seek wrongly auto-resume (and would defeat seek()'s re-derivation
