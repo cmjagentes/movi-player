@@ -36,6 +36,7 @@ import { setWasmUrl } from "../wasm/FFmpegLoader";
 import { probeLinkBandwidth } from "../utils/bandwidthProbe";
 import { childAbort } from "../utils/abort";
 import {
+  ANNOTATION_MAX_PLAYBACK_RATE,
   captureOwnedAnnotationFrame,
   CoalescedSeekQueue,
   executeSettledSeek,
@@ -10503,11 +10504,12 @@ export class MoviElement extends HTMLElement {
   }
 
   /*
-   * Maximum playback rate the current source can sustain. All sources allow
-   * the full 2x — the previous 8K+ cap has been removed.
+   * Host-driven annotation playback needs the full Folegol rate surface.
+   * Built-in controls may remain more conservative, but programmatic callers
+   * must not silently clamp 3x/4x requests.
    */
   private getMaxAllowedRate(): number {
-    return 2;
+    return ANNOTATION_MAX_PLAYBACK_RATE;
   }
 
   /** Volume ceiling: 200% normally (boost via AudioContext gain), but 100% when

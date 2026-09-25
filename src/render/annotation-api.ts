@@ -1,3 +1,5 @@
+export const ANNOTATION_MAX_PLAYBACK_RATE = 4;
+
 export type SeekExecutor = (targetSeconds: number) => Promise<number>;
 
 type SeekRequest = {

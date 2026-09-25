@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'release-folegol-publish-0.4.1-folegol.2'
+    if: github.event.head_commit.message == 'release-folegol-publish-0.4.1-folegol.3'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -44,11 +44,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="folegol-v0.4.1-folegol.2"
-          package="artifacts/movi-player-0.4.1-folegol.2.tgz"
+          tag="folegol-v0.4.1-folegol.3"
+          package="artifacts/movi-player-0.4.1-folegol.3.tgz"
           test -f "$package"
           gh release create "$tag" "$package" \
             --target "$GITHUB_SHA" \
-            --title "Folegol integration 0.4.1-folegol.2" \
-            --notes "Plan 045 M1 integration package. Includes precise host-driven seek and caller-owned frame capture APIs. Built and gated from commit $GITHUB_SHA." \
+            --title "Folegol integration 0.4.1-folegol.3" \
+            --notes "Plan 045 integration package. Includes precise host-driven seek, caller-owned frame capture, and 4x host playback-rate support. Built and gated from commit $GITHUB_SHA." \
             --prerelease

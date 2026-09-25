@@ -1,11 +1,18 @@
 import { describe, expect, test } from "vitest";
 import {
+  ANNOTATION_MAX_PLAYBACK_RATE,
   captureOwnedAnnotationFrame,
   CoalescedSeekQueue,
   executeSettledSeek,
   isNearBlackRgba,
   normalizeSeekSeconds,
 } from "./annotation-api";
+
+describe("annotation playback-rate contract", () => {
+  test("keeps the host-programmatic ceiling aligned with Folegol's selector", () => {
+    expect(ANNOTATION_MAX_PLAYBACK_RATE).toBe(4);
+  });
+});
 
 describe("annotation seek contract", () => {
   test("rejects non-finite targets and clamps finite targets to media bounds", () => {
