@@ -27,6 +27,17 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Refresh lockfile metadata
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Upload refreshed lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: movi-player-lockfile-${{ github.sha }}
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Install dependencies
         run: npm ci
 
