@@ -36,9 +36,12 @@ import { setWasmUrl } from "../wasm/FFmpegLoader";
 import { probeLinkBandwidth } from "../utils/bandwidthProbe";
 import { childAbort } from "../utils/abort";
 import {
+  captureOwnedAnnotationFrame,
   CoalescedSeekQueue,
+  executeSettledSeek,
   isNearBlackRgba,
   normalizeSeekSeconds,
+  type AnnotationCapturedFrame,
 } from "./annotation-api";
 
 const TAG = "MoviElement";
@@ -207,14 +210,7 @@ const OSD = {
  * inserted as markup. A host passing anything it did not write should sanitise
  * it first, or hand over an Element it built itself.
  */
-export type MoviCapturedFrame = {
-  /** Caller-owned bitmap. The caller must close() it when finished. */
-  image: ImageBitmap;
-  width: number;
-  height: number;
-  /** Settled UI media time, in seconds, represented by this frame. */
-  mediaTime: number;
-};
+export type MoviCapturedFrame = AnnotationCapturedFrame;
 
 export interface MoviOverlaySpec {
   /** Unique, and the handle for updateOverlay / hideOverlay. */
@@ -34064,60 +34060,19 @@ export class MoviElement extends HTMLElement {
     target: number,
     signal: AbortSignal,
   ): Promise<number> {
-    if (signal.aborted) {
-      return Promise.reject(
-        signal.reason instanceof Error
-          ? signal.reason
-          : new Error("Annotation seek was aborted."),
-      );
-    }
-    return new Promise<number>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        cleanup();
-        reject(new Error(`Timed out seeking to ${target.toFixed(3)}s.`));
-      }, 30_000);
-      let presentationCheckInFlight = false;
-      const cleanup = () => {
-        window.clearTimeout(timeout);
-        this.removeEventListener("seeked", onSeeked);
-        this.removeEventListener("error", onError);
-        signal.removeEventListener("abort", onAbort);
-      };
-      const onError = (event: Event) => {
-        cleanup();
-        reject(
-          (event as CustomEvent<unknown>).detail instanceof Error
-            ? (event as CustomEvent<Error>).detail
-            : new Error("Movi failed while seeking for annotation."),
-        );
-      };
-      const onAbort = () => {
-        cleanup();
-        reject(
-          signal.reason instanceof Error
-            ? signal.reason
-            : new Error("Annotation seek was aborted."),
-        );
-      };
-      const onSeeked = () => {
-        if (Math.abs(this.currentTime - target) > 0.25 || presentationCheckInFlight) {
-          return;
-        }
-        presentationCheckInFlight = true;
-        void this.waitForPresentedAnnotationFrame(target, signal)
-          .then((settled) => {
-            cleanup();
-            resolve(settled);
-          })
-          .catch((error) => {
-            cleanup();
-            reject(error);
-          });
-      };
-      this.addEventListener("seeked", onSeeked);
-      this.addEventListener("error", onError);
-      signal.addEventListener("abort", onAbort, { once: true });
-      this.currentTime = target;
+    return executeSettledSeek(target, signal, {
+      currentTime: () => this.currentTime,
+      setCurrentTime: (nextTarget) => {
+        this.currentTime = nextTarget;
+      },
+      addEventListener: (type, listener) => {
+        this.addEventListener(type, listener);
+      },
+      removeEventListener: (type, listener) => {
+        this.removeEventListener(type, listener);
+      },
+      waitForPresentedFrame: (nextTarget, nextSignal) =>
+        this.waitForPresentedAnnotationFrame(nextTarget, nextSignal),
     });
   }
 
@@ -34173,64 +34128,27 @@ export class MoviElement extends HTMLElement {
     if (!this.player && (!this.video || this.video.style.display === "none")) {
       return null;
     }
-    const mediaTime = this.currentTime;
 
-    if (this.canvas && this.canvas.style.display !== "none") {
-      try {
-        const image = await createImageBitmap(this.canvas);
-        if (!this.isImageBitmapBlank(image)) {
-          return {
-            image,
-            width: image.width,
-            height: image.height,
-            mediaTime,
-          };
-        }
-        image.close();
-      } catch (error) {
-        Logger.warn(TAG, "Canvas frame capture failed", error);
-      }
-
-      const frame = this.player?.getCurrentVideoFrame?.();
-      if (frame) {
-        try {
-          const image = await createImageBitmap(frame);
-          Logger.info(
-            TAG,
-            "Snapshot: canvas readback was blank, used decoded VideoFrame",
-          );
-          return {
-            image,
-            width: image.width,
-            height: image.height,
-            mediaTime,
-          };
-        } catch (error) {
-          Logger.warn(TAG, "Decoded-frame capture fallback failed", error);
-        }
-      }
-    }
-
-    if (
+    const nativeVideoVisible =
       this.video &&
       this.video.style.display !== "none" &&
       this.video.videoWidth > 0 &&
-      this.video.videoHeight > 0
-    ) {
-      try {
-        const image = await createImageBitmap(this.video);
-        return {
-          image,
-          width: image.width,
-          height: image.height,
-          mediaTime,
-        };
-      } catch (error) {
-        Logger.warn(TAG, "Native video frame capture failed", error);
-      }
-    }
+      this.video.videoHeight > 0;
+    const canvasVisible =
+      this.canvas && this.canvas.style.display !== "none";
+    const preferredSource: CanvasImageSource | null = nativeVideoVisible
+      ? this.video
+      : canvasVisible
+        ? (this.player?.getCurrentVideoFrame?.() ?? null)
+        : null;
 
-    return null;
+    return captureOwnedAnnotationFrame({
+      mediaTime: this.currentTime,
+      preferredSource,
+      renderedCanvas: canvasVisible ? this.canvas : null,
+      createBitmap: (source) => createImageBitmap(source),
+      isCanvasBitmapBlank: (image) => this.isImageBitmapBlank(image),
+    });
   }
 
   private isImageBitmapBlank(image: ImageBitmap): boolean {
