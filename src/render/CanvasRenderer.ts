@@ -1746,6 +1746,11 @@ export class CanvasRenderer {
     return this.lastRenderedFrame;
   }
 
+  /** Media PTS, in seconds, for the frame currently retained on screen. */
+  getCurrentFrameTime(): number | null {
+    return this.lastPresentedPts >= 0 ? this.lastPresentedPts : null;
+  }
+
   /**
    * Snapshot the live 360° camera + projection so a thumbnail/preview can be
    * reprojected to exactly what the user currently sees. Returns the CURRENT
