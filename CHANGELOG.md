@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1-folegol.1] - 2026-09-25
+
+### Added
+- **Precise annotation seek API**: `MoviElement.seekTo(seconds)` validates and clamps targets, serializes active seeks, coalesces rapid queued targets latest-first, and resolves only after the requested frame is retained/presented.
+- **Caller-owned frame capture**: `MoviElement.captureFrame()` returns an `ImageBitmap`, dimensions and settled media time without downloading or encoding. The caller owns and closes the bitmap.
+
+### Changed
+- **Snapshot acquisition is shared**: the built-in Snapshot control now consumes `captureFrame()`, preserving the existing non-black hardware-decoder fallback instead of maintaining a separate capture implementation.
+
 ## [0.4.0] - 2026-08-15
 
 ### Added
