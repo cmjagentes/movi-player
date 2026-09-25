@@ -1,0 +1,54 @@
+name: Publish Folegol integration package
+
+on:
+  push:
+    branches:
+      - folegol/annotation-playback-m1
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: startsWith(github.event.head_commit.message, 'release(folegol): publish 0.4.1-folegol.1')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test -- --run
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack release tarball
+        run: |
+          mkdir -p artifacts
+          npm pack --pack-destination artifacts
+
+      - name: Publish immutable prerelease asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="folegol-v0.4.1-folegol.1"
+          package="artifacts/movi-player-0.4.1-folegol.1.tgz"
+          test -f "$package"
+          gh release create "$tag" "$package" \
+            --target "$GITHUB_SHA" \
+            --title "Folegol integration 0.4.1-folegol.1" \
+            --notes "Plan 045 M1 integration package. Includes precise host-driven seek and caller-owned frame capture APIs. Built and gated from commit $GITHUB_SHA." \
+            --prerelease
