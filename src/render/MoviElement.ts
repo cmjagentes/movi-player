@@ -35,6 +35,11 @@ import { IS_SLIM, BUILD } from "../build-flags";
 import { setWasmUrl } from "../wasm/FFmpegLoader";
 import { probeLinkBandwidth } from "../utils/bandwidthProbe";
 import { childAbort } from "../utils/abort";
+import {
+  CoalescedSeekQueue,
+  isNearBlackRgba,
+  normalizeSeekSeconds,
+} from "./annotation-api";
 
 const TAG = "MoviElement";
 
@@ -202,6 +207,15 @@ const OSD = {
  * inserted as markup. A host passing anything it did not write should sanitise
  * it first, or hand over an Element it built itself.
  */
+export type MoviCapturedFrame = {
+  /** Caller-owned bitmap. The caller must close() it when finished. */
+  image: ImageBitmap;
+  width: number;
+  height: number;
+  /** Settled UI media time, in seconds, represented by this frame. */
+  mediaTime: number;
+};
+
 export interface MoviOverlaySpec {
   /** Unique, and the handle for updateOverlay / hideOverlay. */
   id: string;
@@ -602,6 +616,8 @@ export class MoviElement extends HTMLElement {
   private isOverControls: boolean = false;
   private isSeeking: boolean = false;
   private pendingSeekTarget: number | null = null; // Coalesces rapid currentTime sets while a seek is in flight
+  private readonly _annotationSeekQueue = new CoalescedSeekQueue();
+  private _annotationApiAbort = new AbortController();
   private _pendingSeek: number | null = null; // Seek requested before the player was ready; applied on the next seekable state
   private isDragging: boolean = false;
   /** The chapter section currently raised under the pointer, so the playback
@@ -23181,6 +23197,7 @@ export class MoviElement extends HTMLElement {
   disconnectedCallback() {
     // Nothing fetched for a player that is no longer in the document is wanted.
     this._sourceAbort.abort();
+    this.invalidateAnnotationApi("Movi element disconnected during annotation work.");
     // Drop any pending rounding re-applies — see connectedCallback.
     for (const t of this._roundingTimers) clearTimeout(t);
     this._roundingTimers.clear();
@@ -26148,6 +26165,7 @@ export class MoviElement extends HTMLElement {
   }
 
   async load(): Promise<void> {
+    this.invalidateAnnotationApi("Movi source changed during annotation work.");
     // NOTE: no generation bump here. load() teardown is synchronous and runs
     // straight into initializePlayer(), whose own bump invalidates anything
     // still in flight. Bumping here as well invalidated in-flight inits on
@@ -33956,6 +33974,281 @@ export class MoviElement extends HTMLElement {
       });
   }
 
+  /**
+   * Seek for annotation work and resolve only after the requested position has
+   * settled and the requested frame is actually retained/presented.
+   *
+   * Rapid calls keep the active seek and coalesce the queue to the newest target.
+   */
+  async seekTo(seconds: number): Promise<number> {
+    const initialTarget = normalizeSeekSeconds(seconds, this.duration);
+    return this._annotationSeekQueue.enqueue(initialTarget, async (queuedTarget) => {
+      const signal = this._annotationApiAbort.signal;
+      await this.waitForAnnotationSeekReady(signal);
+      if (this._linearMode) {
+        throw new Error("Precise seeking is unavailable for a linear source.");
+      }
+      const target = normalizeSeekSeconds(queuedTarget, this.duration);
+      return this.performAnnotationSeek(target, signal);
+    });
+  }
+
+  private invalidateAnnotationApi(message: string): void {
+    const error = new Error(message);
+    this._annotationApiAbort.abort(error);
+    this._annotationApiAbort = new AbortController();
+    this._annotationSeekQueue.cancelPending(error);
+  }
+
+  private waitForAnnotationSeekReady(signal: AbortSignal): Promise<void> {
+    const isReady = () => {
+      const state = this.player?.getState();
+      return (
+        state === "ready" ||
+        state === "playing" ||
+        state === "paused" ||
+        state === "ended" ||
+        state === "seeking" ||
+        state === "buffering"
+      );
+    };
+    if (isReady()) return Promise.resolve();
+    if (signal.aborted) {
+      return Promise.reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Annotation seek was aborted."),
+      );
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out waiting for Movi to become seekable."));
+      }, 30_000);
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        this.removeEventListener("loadedmetadata", onReady);
+        this.removeEventListener("canplay", onReady);
+        this.removeEventListener("error", onError);
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onReady = () => {
+        if (!isReady()) return;
+        cleanup();
+        resolve();
+      };
+      const onError = (event: Event) => {
+        cleanup();
+        reject(
+          (event as CustomEvent<unknown>).detail instanceof Error
+            ? (event as CustomEvent<Error>).detail
+            : new Error("Movi failed before the annotation seek could start."),
+        );
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error("Annotation seek was aborted."),
+        );
+      };
+      this.addEventListener("loadedmetadata", onReady);
+      this.addEventListener("canplay", onReady);
+      this.addEventListener("error", onError);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  private performAnnotationSeek(
+    target: number,
+    signal: AbortSignal,
+  ): Promise<number> {
+    if (signal.aborted) {
+      return Promise.reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Annotation seek was aborted."),
+      );
+    }
+    return new Promise<number>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out seeking to ${target.toFixed(3)}s.`));
+      }, 30_000);
+      let presentationCheckInFlight = false;
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        this.removeEventListener("seeked", onSeeked);
+        this.removeEventListener("error", onError);
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onError = (event: Event) => {
+        cleanup();
+        reject(
+          (event as CustomEvent<unknown>).detail instanceof Error
+            ? (event as CustomEvent<Error>).detail
+            : new Error("Movi failed while seeking for annotation."),
+        );
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error("Annotation seek was aborted."),
+        );
+      };
+      const onSeeked = () => {
+        if (Math.abs(this.currentTime - target) > 0.25 || presentationCheckInFlight) {
+          return;
+        }
+        presentationCheckInFlight = true;
+        void this.waitForPresentedAnnotationFrame(target, signal)
+          .then((settled) => {
+            cleanup();
+            resolve(settled);
+          })
+          .catch((error) => {
+            cleanup();
+            reject(error);
+          });
+      };
+      this.addEventListener("seeked", onSeeked);
+      this.addEventListener("error", onError);
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.currentTime = target;
+    });
+  }
+
+  private waitForPresentedAnnotationFrame(
+    target: number,
+    signal: AbortSignal,
+  ): Promise<number> {
+    const hasVideo = this.videoWidth > 0 && this.videoHeight > 0;
+    if (!hasVideo) return Promise.resolve(this.currentTime);
+    const startedAt = performance.now();
+    return new Promise<number>((resolve, reject) => {
+      const check = () => {
+        if (signal.aborted) {
+          reject(
+            signal.reason instanceof Error
+              ? signal.reason
+              : new Error("Annotation seek was aborted."),
+          );
+          return;
+        }
+        if (this.video && this.video.style.display !== "none") {
+          if (
+            this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+            Math.abs(this.video.currentTime - target) <= 0.25
+          ) {
+            resolve(this.currentTime);
+            return;
+          }
+        } else {
+          const presented = this.player?.getCurrentVideoFrameTime?.();
+          if (presented !== null && presented !== undefined && Math.abs(presented - target) <= 0.25) {
+            resolve(this.currentTime);
+            return;
+          }
+        }
+        if (performance.now() - startedAt >= 5_000) {
+          reject(
+            new Error(`Seek reached ${target.toFixed(3)}s without presenting the requested frame.`),
+          );
+          return;
+        }
+        window.setTimeout(check, 16);
+      };
+      check();
+    });
+  }
+
+  /**
+   * Capture the currently presented frame without downloading or encoding it.
+   * The returned ImageBitmap is owned by the caller and must be close()d.
+   */
+  async captureFrame(): Promise<MoviCapturedFrame | null> {
+    if (!this.player && (!this.video || this.video.style.display === "none")) {
+      return null;
+    }
+    const mediaTime = this.currentTime;
+
+    if (this.canvas && this.canvas.style.display !== "none") {
+      try {
+        const image = await createImageBitmap(this.canvas);
+        if (!this.isImageBitmapBlank(image)) {
+          return {
+            image,
+            width: image.width,
+            height: image.height,
+            mediaTime,
+          };
+        }
+        image.close();
+      } catch (error) {
+        Logger.warn(TAG, "Canvas frame capture failed", error);
+      }
+
+      const frame = this.player?.getCurrentVideoFrame?.();
+      if (frame) {
+        try {
+          const image = await createImageBitmap(frame);
+          Logger.info(
+            TAG,
+            "Snapshot: canvas readback was blank, used decoded VideoFrame",
+          );
+          return {
+            image,
+            width: image.width,
+            height: image.height,
+            mediaTime,
+          };
+        } catch (error) {
+          Logger.warn(TAG, "Decoded-frame capture fallback failed", error);
+        }
+      }
+    }
+
+    if (
+      this.video &&
+      this.video.style.display !== "none" &&
+      this.video.videoWidth > 0 &&
+      this.video.videoHeight > 0
+    ) {
+      try {
+        const image = await createImageBitmap(this.video);
+        return {
+          image,
+          width: image.width,
+          height: image.height,
+          mediaTime,
+        };
+      } catch (error) {
+        Logger.warn(TAG, "Native video frame capture failed", error);
+      }
+    }
+
+    return null;
+  }
+
+  private isImageBitmapBlank(image: ImageBitmap): boolean {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 32;
+      canvas.height = 18;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return false;
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      return isNearBlackRgba(
+        context.getImageData(0, 0, canvas.width, canvas.height).data,
+      );
+    } catch {
+      return false;
+    }
+  }
+
   get renderer(): RendererType {
     return this._renderer;
   }
@@ -35156,111 +35449,45 @@ export class MoviElement extends HTMLElement {
   }
 
   /*
-   * Take a snapshot of the current frame and download it
+   * Take a snapshot of the current frame and download it.
+   * Frame acquisition is shared with the public annotation capture API.
    */
   private async takeSnapshot(): Promise<void> {
-    if (!this.player) return;
-
+    let captured: MoviCapturedFrame | null = null;
     try {
-      let dataUrl: string | null = null;
-
-      // If we are in canvas mode, it's easy
-      if (this.canvas && this.canvas.style.display !== "none") {
-        dataUrl = this.canvas.toDataURL("image/png");
-        // Some GPUs return an all-black buffer when a WebGL canvas that
-        // displayed a HARDWARE-decoded frame (4K AV1/HEVC etc.) is read back
-        // via toDataURL — even with preserveDrawingBuffer — so the snapshot
-        // saves empty. Detect that and fall back to the raw decoded VideoFrame
-        // drawn onto a plain 2D canvas (GPU-readback-independent). Trade-off:
-        // this frame has no burned-in subtitles, but a real frame beats a
-        // black one.
-        if (await this.isDataUrlBlank(dataUrl)) {
-          const frame = this.player.getCurrentVideoFrame?.();
-          if (frame) {
-            try {
-              const c = document.createElement("canvas");
-              // Either a decoded VideoFrame or, on the MSE paths, the <video>
-              // element itself — both draw, each reports its size its own way.
-              const isEl = frame instanceof HTMLVideoElement;
-              c.width = isEl ? frame.videoWidth : frame.displayWidth;
-              c.height = isEl ? frame.videoHeight : frame.displayHeight;
-              const ctx = c.getContext("2d");
-              if (ctx) {
-                ctx.drawImage(frame, 0, 0);
-                dataUrl = c.toDataURL("image/png");
-                Logger.info(TAG, "Snapshot: WebGL readback was blank, used decoded VideoFrame");
-              }
-            } catch (e) {
-              Logger.warn(TAG, "VideoFrame snapshot fallback failed", e);
-            }
-          }
-        }
-      } else if (this.video && this.video.style.display !== "none") {
-        // If in video mode, draw video to a temporary canvas
-        const canvas = document.createElement("canvas");
-        canvas.width = this.video.videoWidth;
-        canvas.height = this.video.videoHeight;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(this.video, 0, 0, canvas.width, canvas.height);
-          dataUrl = canvas.toDataURL("image/png");
-        }
-      }
-
-      if (dataUrl) {
-        const link = document.createElement("a");
-        // Format timestamp for filename
-        const time = this.currentTime;
-        const hours = Math.floor(time / 3600);
-        const minutes = Math.floor((time % 3600) / 60);
-        const seconds = Math.floor(time % 60);
-        const timeStr = `${hours > 0 ? hours + "-" : ""}${minutes.toString().padStart(2, "0")}-${seconds.toString().padStart(2, "0")}`;
-
-        link.download = `snapshot-${timeStr}.png`;
-        link.href = dataUrl;
-        link.click();
-
-        Logger.info(TAG, "Snapshot taken and download triggered");
-      } else {
+      captured = await this.captureFrame();
+      if (!captured) {
         Logger.warn(TAG, "Failed to capture snapshot: No valid source found");
-        // Could show a toast message here
+        return;
       }
-    } catch (e) {
-      Logger.error(TAG, "Error taking snapshot", e);
-    }
-  }
 
-  /**
-   * Decode a data-URL into a small sampling canvas and report whether every
-   * pixel is (near-)black — i.e. the capture came out empty. Used to detect a
-   * failed WebGL readback so takeSnapshot can fall back to the raw VideoFrame.
-   */
-  private isDataUrlBlank(dataUrl: string | null): Promise<boolean> {
-    return new Promise((resolve) => {
-      if (!dataUrl || dataUrl.length < 32) return resolve(true);
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const w = 32;
-          const h = 18;
-          const c = document.createElement("canvas");
-          c.width = w;
-          c.height = h;
-          const ctx = c.getContext("2d", { willReadFrequently: true });
-          if (!ctx) return resolve(false); // can't sample — trust the capture
-          ctx.drawImage(img, 0, 0, w, h);
-          const d = ctx.getImageData(0, 0, w, h).data;
-          for (let i = 0; i < d.length; i += 4) {
-            if (d[i] > 8 || d[i + 1] > 8 || d[i + 2] > 8) return resolve(false);
-          }
-          resolve(true); // every sampled pixel is essentially black
-        } catch {
-          resolve(false); // decode/read failed — don't force the fallback
-        }
-      };
-      img.onerror = () => resolve(true);
-      img.src = dataUrl;
-    });
+      const canvas = document.createElement("canvas");
+      canvas.width = captured.width;
+      canvas.height = captured.height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        Logger.warn(TAG, "Failed to capture snapshot: 2D canvas unavailable");
+        return;
+      }
+      context.drawImage(captured.image, 0, 0, captured.width, captured.height);
+      const dataUrl = canvas.toDataURL("image/png");
+
+      const link = document.createElement("a");
+      const time = captured.mediaTime;
+      const hours = Math.floor(time / 3600);
+      const minutes = Math.floor((time % 3600) / 60);
+      const seconds = Math.floor(time % 60);
+      const timeStr = `${hours > 0 ? hours + "-" : ""}${minutes.toString().padStart(2, "0")}-${seconds.toString().padStart(2, "0")}`;
+
+      link.download = `snapshot-${timeStr}.png`;
+      link.href = dataUrl;
+      link.click();
+      Logger.info(TAG, "Snapshot taken and download triggered");
+    } catch (error) {
+      Logger.error(TAG, "Error taking snapshot", error);
+    } finally {
+      captured?.image.close();
+    }
   }
 
   /**
