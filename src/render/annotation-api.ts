@@ -1,4 +1,5 @@
 export const ANNOTATION_MAX_PLAYBACK_RATE = 4;
+export const ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS = 0.1;
 
 export type SeekExecutor = (targetSeconds: number) => Promise<number>;
 
@@ -168,7 +169,8 @@ export function executeSettledSeek(
     };
     const onSeeked = () => {
       if (
-        Math.abs(driver.currentTime() - targetSeconds) > 0.25 ||
+        Math.abs(driver.currentTime() - targetSeconds) >
+          ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS ||
         presentationCheckInFlight
       ) {
         return;
@@ -177,6 +179,19 @@ export function executeSettledSeek(
       void driver
         .waitForPresentedFrame(targetSeconds, signal)
         .then((settled) => {
+          if (
+            !Number.isFinite(settled) ||
+            Math.abs(settled - targetSeconds) >
+              ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS
+          ) {
+            cleanup();
+            reject(
+              new Error(
+                `Presented frame settled at ${settled.toFixed(3)}s, outside the annotation seek boundary for ${targetSeconds.toFixed(3)}s.`,
+              ),
+            );
+            return;
+          }
           cleanup();
           resolve(settled);
         })
