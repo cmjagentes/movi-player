@@ -47,7 +47,7 @@ jobs:
       - name: Upload integration package
         uses: actions/upload-artifact@v4
         with:
-          name: movi-player-0.4.1-folegol.1
+          name: movi-player-0.4.1-folegol.2
           path: artifacts/*.tgz
           if-no-files-found: error
           retention-days: 90
