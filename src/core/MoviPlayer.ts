@@ -8257,6 +8257,24 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
   }
 
   /**
+   * UI media time for the frame currently retained on screen.
+   * Used by precise host-driven seeks to distinguish a settled/presented frame
+   * from the stale frame intentionally held while a seek is still decoding.
+   */
+  getCurrentVideoFrameTime(): number | null {
+    const frame = this.videoRenderer?.getCurrentFrame();
+    if (
+      typeof HTMLVideoElement !== "undefined" &&
+      frame instanceof HTMLVideoElement
+    ) {
+      return Number.isFinite(frame.currentTime) ? frame.currentTime : null;
+    }
+    const pts = this.videoRenderer?.getCurrentFrameTime();
+    if (pts === null || pts === undefined) return null;
+    return Math.max(0, pts - this.startTime - this.seekKeyframeOffset);
+  }
+
+  /**
    * Get current video rotation
    */
   getVideoRotation(): number {
