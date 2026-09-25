@@ -37,6 +37,7 @@ import { probeLinkBandwidth } from "../utils/bandwidthProbe";
 import { childAbort } from "../utils/abort";
 import {
   ANNOTATION_MAX_PLAYBACK_RATE,
+  ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS,
   captureOwnedAnnotationFrame,
   CoalescedSeekQueue,
   executeSettledSeek,
@@ -34098,14 +34099,20 @@ export class MoviElement extends HTMLElement {
         if (this.video && this.video.style.display !== "none") {
           if (
             this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-            Math.abs(this.video.currentTime - target) <= 0.25
+            Math.abs(this.video.currentTime - target) <=
+              ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS
           ) {
             resolve(this.currentTime);
             return;
           }
         } else {
           const presented = this.player?.getCurrentVideoFrameTime?.();
-          if (presented !== null && presented !== undefined && Math.abs(presented - target) <= 0.25) {
+          if (
+            presented !== null &&
+            presented !== undefined &&
+            Math.abs(presented - target) <=
+              ANNOTATION_SEEK_SETTLE_TOLERANCE_SECONDS
+          ) {
             resolve(this.currentTime);
             return;
           }
