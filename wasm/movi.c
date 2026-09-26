@@ -152,7 +152,7 @@ MoviContext *movi_create(void) {
     free(ctx);
     return NULL;
   }
-  ctx->avio_buffer_size = 524288; // 512KB buffer for fewer JS callbacks
+  ctx->avio_buffer_size = 2097152; // 2MB buffer: fewer Asyncify/JS read crossings during high-bitrate playback
   return ctx;
 }
 
