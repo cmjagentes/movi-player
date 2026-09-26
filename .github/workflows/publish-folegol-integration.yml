@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.head_commit.message == 'release-folegol-publish-0.4.1-folegol.5'
+    if: github.event.head_commit.message == 'release-folegol-publish-0.4.1-folegol.6'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -44,11 +44,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="folegol-v0.4.1-folegol.5"
-          package="artifacts/movi-player-0.4.1-folegol.5.tgz"
+          tag="folegol-v0.4.1-folegol.6"
+          package="artifacts/movi-player-0.4.1-folegol.6.tgz"
           test -f "$package"
           gh release create "$tag" "$package" \
             --target "$GITHUB_SHA" \
-            --title "Folegol integration 0.4.1-folegol.5" \
-            --notes "Plan 045 integration package. Includes precise host-driven seek, caller-owned frame capture, 4x host playback-rate support, 100ms seek settlement, paused-seek anchoring, and stale resume-intent cleanup on user pause. Built and gated from commit $GITHUB_SHA." \
+            --title "Folegol integration 0.4.1-folegol.6" \
+            --notes "Plan 045 integration package. Includes precise host-driven seek, caller-owned frame capture, 4x host playback-rate support, 100ms seek settlement, paused-seek anchoring, and stale resume-intent cleanup on user pause, including already-paused host state. Built and gated from commit $GITHUB_SHA." \
             --prerelease
