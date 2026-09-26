@@ -4050,6 +4050,12 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       return;
     }
 
+    // A host/user pause is authoritative even when the state machine already
+    // reports "paused". Clear latent resume intent before canPause() so a stale
+    // buffering/seek flag cannot survive into the next host-driven seek.
+    this.wasPlayingBeforeSeek = false;
+    this.wasPlayingBeforeRebuffer = false;
+
     if (!this.stateManager.canPause()) {
       Logger.warn(TAG, "Cannot pause in current state");
       return;
@@ -4091,12 +4097,6 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       Logger.info(TAG, "Paused during buffering");
       return;
     }
-
-    // A direct user pause is authoritative. Clear any resume intent left by a
-    // prior buffering/seek transition so the next seek cannot auto-resume from
-    // stale state.
-    this.wasPlayingBeforeSeek = false;
-    this.wasPlayingBeforeRebuffer = false;
 
     // Release WakeLock when pausing
     this.releaseWakeLock();
