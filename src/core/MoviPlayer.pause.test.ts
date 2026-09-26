@@ -4,6 +4,15 @@ vi.mock("../wasm/FFmpegLoader", () => ({
   loadWasmModuleNew: vi.fn(),
   resetWasmModule: vi.fn(),
 }));
+vi.mock("../render/DASHPlayerWrapper", () => ({
+  DASHPlayerWrapper: class {},
+}));
+vi.mock("../render/HLSPlayerWrapper", () => ({
+  HLSPlayerWrapper: class {},
+}));
+vi.mock("../render/ShakaPlayerWrapper", () => ({
+  ShakaPlayerWrapper: class {},
+}));
 
 import { MoviPlayer } from "./MoviPlayer";
 
