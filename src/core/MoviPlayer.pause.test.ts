@@ -67,4 +67,72 @@ describe("MoviPlayer pause intent", () => {
     expect((player as unknown as { wasPlayingBeforeRebuffer: boolean }).wasPlayingBeforeRebuffer).toBe(false);
     expect(stateManager.setState).toHaveBeenCalledWith("paused");
   });
+
+  test("sheds only high-resolution software HEVC during continuous playback", () => {
+    const setPerformanceSkip = vi.fn();
+    const player = Object.create(MoviPlayer.prototype) as MoviPlayer & Record<string, unknown>;
+    Object.assign(player, {
+      videoDecoder: {
+        isSoftware: true,
+        setPerformanceSkip,
+      },
+      trackManager: {
+        getActiveVideoTrack: () => ({
+          codec: "hevc",
+          width: 3840,
+          height: 2160,
+        }),
+      },
+    });
+
+    (
+      player as unknown as {
+        setContinuousSoftwarePlaybackShedding(active: boolean): void;
+      }
+    ).setContinuousSoftwarePlaybackShedding(true);
+    expect(setPerformanceSkip).toHaveBeenCalledWith(true);
+
+    (
+      player as unknown as {
+        setContinuousSoftwarePlaybackShedding(active: boolean): void;
+      }
+    ).setContinuousSoftwarePlaybackShedding(false);
+    expect(setPerformanceSkip).toHaveBeenLastCalledWith(false);
+  });
+
+  test("does not force frame shedding for hardware or 1080p HEVC playback", () => {
+    const setPerformanceSkip = vi.fn();
+    const player = Object.create(MoviPlayer.prototype) as MoviPlayer & Record<string, unknown>;
+    const decoder = {
+      isSoftware: false,
+      setPerformanceSkip,
+    };
+    const track = {
+      codec: "hevc",
+      width: 3840,
+      height: 2160,
+    };
+    Object.assign(player, {
+      videoDecoder: decoder,
+      trackManager: { getActiveVideoTrack: () => track },
+    });
+
+    (
+      player as unknown as {
+        setContinuousSoftwarePlaybackShedding(active: boolean): void;
+      }
+    ).setContinuousSoftwarePlaybackShedding(true);
+    expect(setPerformanceSkip).not.toHaveBeenCalled();
+
+    decoder.isSoftware = true;
+    track.width = 1920;
+    track.height = 1080;
+    (
+      player as unknown as {
+        setContinuousSoftwarePlaybackShedding(active: boolean): void;
+      }
+    ).setContinuousSoftwarePlaybackShedding(true);
+    expect(setPerformanceSkip).not.toHaveBeenCalled();
+  });
+
 });

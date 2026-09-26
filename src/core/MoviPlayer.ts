@@ -3769,6 +3769,41 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
   }
 
   /**
+   * During continuous viewing, high-resolution HEVC on the FFmpeg/WASM decoder
+   * can spend more CPU than the browser can sustain in realtime. Non-reference
+   * frames are disposable by definition, so shed them while actively playing.
+   * Pause/seek disables the shed immediately so frame-accurate inspection still
+   * decodes every frame from a fresh seek.
+   */
+  private setContinuousSoftwarePlaybackShedding(active: boolean): void {
+    if (!this.videoDecoder) return;
+    if (!active) {
+      this.videoDecoder.setPerformanceSkip(false);
+      return;
+    }
+    const track = this.trackManager.getActiveVideoTrack();
+    if (!track || !this.videoDecoder.isSoftware) return;
+    const codec = (track.codec ?? "").trim().toLowerCase();
+    const highCostHevc =
+      codec === "hevc" ||
+      codec === "h265" ||
+      codec === "h.265" ||
+      codec === "hvc1" ||
+      codec === "hev1";
+    const highResolution =
+      (track.width ?? 0) >= 2560 || (track.height ?? 0) >= 1440;
+    if (highCostHevc && highResolution) {
+      this.videoDecoder.setPerformanceSkip(true);
+      Logger.info(
+        TAG,
+        "Software HEVC realtime mode: shedding non-reference frames at " +
+          track.width +
+          "x" +
+          track.height,
+      );
+    }
+  }
+  /**
    * Start playback
    */
   async play(): Promise<void> {
@@ -4028,6 +4063,8 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       this.ensureBackgroundPump();
     }
 
+    this.setContinuousSoftwarePlaybackShedding(true);
+
     // In WASM split audio-only mode the main (video) demux loop stays parked —
     // resuming it would re-download + decode the video body we're saving. Only
     // the audio loop runs. (Muxed audio-only DOES run processLoop, whose own
@@ -4049,6 +4086,8 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       this.streamWrapper.pause();
       return;
     }
+
+    this.setContinuousSoftwarePlaybackShedding(false);
 
     // A host/user pause is authoritative even when the state machine already
     // reports "paused". Clear latent resume intent before canPause() so a stale
@@ -6190,6 +6229,8 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
     if (this.streamWrapper) {
       return this.streamWrapper.seek(seconds);
     }
+
+    this.setContinuousSoftwarePlaybackShedding(false);
 
     // Split audio-only: seek ONLY the separate audio demuxer + clock; never
     // touch the main (video) demuxer whose body we're skipping, and never wait
