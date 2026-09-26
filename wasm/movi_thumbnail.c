@@ -191,7 +191,11 @@ int movi_thumbnail_open(struct MoviThumbnailContext *ctx) {
       ctx->dec_ctx = avcodec_alloc_context3(codec);
       if (ctx->dec_ctx) {
           if (avcodec_parameters_to_context(ctx->dec_ctx, st->codecpar) >= 0) {
-              ctx->dec_ctx->thread_count = 1; // Single thread for WASM
+    #ifdef __EMSCRIPTEN_PTHREADS__
+          ctx->dec_ctx->thread_count = 0; // Auto-size from the pthread pool.
+#else
+          ctx->dec_ctx->thread_count = 1; // Published fallback stays single-threaded.
+#endif
               ctx->dec_ctx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL; // Enable experimental features
               
               // Force software decoding by disabling HW device types

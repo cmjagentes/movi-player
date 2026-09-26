@@ -1,0 +1,52 @@
+name: Folegol M5 threaded Movi
+
+on:
+  push:
+    branches:
+      - "folegol/threaded-wasm-m5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: folegol-m5-threaded-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build threaded Movi
+        run: npm run build:threaded
+
+      - name: Verify pthread artifacts
+        run: |
+          set -euo pipefail
+          test -s dist/element.threaded.js
+          test -s dist/movi-threaded.wasm
+          test -s dist/movi-threaded.worker.js
+          grep -q 'movi-threaded.wasm' dist/element.threaded.js
+          grep -q 'movi-threaded.worker.js' dist/element.threaded.js
+          grep -Eqi 'pthread|PThread|SharedArrayBuffer' dist/element.threaded.js
+          sha256sum             dist/element.threaded.js             dist/movi-threaded.wasm             dist/movi-threaded.worker.js             | tee dist/FOLEGOL_M5_THREADED_SHA256SUMS
+
+      - name: Publish immutable M5 assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA:0:12}"
+          tag="folegol-m5-threaded-${short_sha}"
+          gh release create "${tag}"             dist/element.threaded.js             dist/movi-threaded.wasm             dist/movi-threaded.worker.js             dist/FOLEGOL_M5_THREADED_SHA256SUMS             --target "${GITHUB_SHA}"             --title "Folegol M5 threaded Movi ${short_sha}"             --notes "Plan 047 M5 pthread-enabled Movi assets based on Folegol 0.4.1-folegol.7. Non-threaded package behavior is unchanged."             --prerelease

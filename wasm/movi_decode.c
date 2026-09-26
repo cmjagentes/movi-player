@@ -35,7 +35,13 @@ int movi_enable_decoder(MoviContext *ctx, int stream_index,
   // handling) FFmpeg uses pkt_timebase to convert packet duration to
   // end_display_time
   c->pkt_timebase = stream->time_base;
+#ifdef __EMSCRIPTEN_PTHREADS__
+  // M5 pthread build: let FFmpeg choose a worker count from the Emscripten
+  // pthread pool. The published non-threaded package remains single-threaded.
+  c->thread_count = 0;
+#else
   c->thread_count = 1;
+#endif
   if (avcodec_open2(c, codec, NULL) < 0) {
     avcodec_free_context(&c);
     return -5;
