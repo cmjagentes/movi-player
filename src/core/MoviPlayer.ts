@@ -4092,6 +4092,12 @@ export class MoviPlayer extends EventEmitter<PlayerEventMap> {
       return;
     }
 
+    // A direct user pause is authoritative. Clear any resume intent left by a
+    // prior buffering/seek transition so the next seek cannot auto-resume from
+    // stale state.
+    this.wasPlayingBeforeSeek = false;
+    this.wasPlayingBeforeRebuffer = false;
+
     // Release WakeLock when pausing
     this.releaseWakeLock();
 
