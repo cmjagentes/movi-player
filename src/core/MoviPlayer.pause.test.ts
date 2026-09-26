@@ -1,4 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
+
+vi.mock("../wasm/FFmpegLoader", () => ({
+  loadWasmModuleNew: vi.fn(),
+  resetWasmModule: vi.fn(),
+}));
+
 import { MoviPlayer } from "./MoviPlayer";
 
 describe("MoviPlayer pause intent", () => {
