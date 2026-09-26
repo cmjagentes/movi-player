@@ -119,7 +119,8 @@
     "app:harden": "node scripts/harden-element.js",
     "app:upload": "npm run app:harden && wrangler r2 object put movi-assets/element.js --file dist/element.js --remote && wrangler r2 object put movi-assets/element.slim.js --file dist/element.slim.js --remote && wrangler r2 object put movi-assets/movi.wasm --file dist/movi.wasm --content-type application/wasm --remote",
     "app:upload:local": "wrangler r2 object put movi-assets/element.js --file dist/element.js --local --persist-to app/.wrangler/state",
-    "app:release": "npm run build:ts && npm run app:upload && npm run app:deploy"
+    "app:release": "npm run build:ts && npm run app:upload && npm run app:deploy",
+    "build:threaded": "MOVI_THREADS=1 FORCE_FFMPEG=true FORCE_DAV1D=true docker compose run --rm build && MOVI_THREADED_ONLY=1 node scripts/build-standalone.js"
   },
   "keywords": [
     "video-player",

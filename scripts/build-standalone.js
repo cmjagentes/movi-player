@@ -21,7 +21,11 @@ const PKG_VERSION = JSON.parse(
   readFileSync(resolve(rootDir, 'package.json'), 'utf8'),
 ).version;
 
-const entries = [
+const threadedOnly = process.env.MOVI_THREADED_ONLY === '1';
+
+const entries = threadedOnly
+  ? [{ name: 'element.threaded', path: 'src/element-slim.ts', slim: true, threaded: true }]
+  : [
   { name: 'demuxer', path: 'src/demuxer.ts' },
   { name: 'player', path: 'src/player.ts' },
   { name: 'element', path: 'src/element.ts' },
@@ -123,7 +127,9 @@ async function buildEntry(entry, format) {
             alias: [
               {
                 find: /\/dist\/wasm\/movi\.js$/,
-                replacement: '/dist/wasm/external/movi.js',
+                replacement: entry.threaded
+                  ? '/dist/wasm/threaded/movi.js'
+                  : '/dist/wasm/external/movi.js',
               },
             ],
           },
@@ -232,22 +238,58 @@ function externalizeSlimWasm() {
   console.log('✓ slim WASM externalized → dist/movi.wasm (bundle no longer embeds it)');
 }
 
+function externalizeThreadedAssets() {
+  const threadedDir = resolve(rootDir, 'dist/wasm/threaded');
+  const wasmSrc = resolve(threadedDir, 'movi.wasm');
+  const workerSrc = resolve(threadedDir, 'movi.worker.js');
+  if (!existsSync(wasmSrc) || !existsSync(workerSrc)) {
+    throw new Error(
+      'Threaded build assets are missing — run the pthread WASM build first.',
+    );
+  }
+
+  copyFileSync(wasmSrc, resolve(rootDir, 'dist/movi-threaded.wasm'));
+  copyFileSync(workerSrc, resolve(rootDir, 'dist/movi-threaded.worker.js'));
+
+  const p = resolve(rootDir, 'dist/element.threaded.js');
+  const before = readFileSync(p, 'utf8');
+  const dataUrl = /new URL\("data:application\/wasm;base64,[A-Za-z0-9+/=]+"/g;
+  let after = before.replace(dataUrl, 'new URL("movi-threaded.wasm"');
+  after = after
+    .replaceAll('"movi.worker.js"', '"movi-threaded.worker.js"')
+    .replaceAll("'movi.worker.js'", "'movi-threaded.worker.js'");
+  if (!after.includes('movi-threaded.wasm')) {
+    throw new Error(
+      'Threaded build did not expose a relocatable movi-threaded.wasm reference.',
+    );
+  }
+  if (!after.includes('movi-threaded.worker.js')) {
+    throw new Error(
+      'Threaded build did not expose a relocatable pthread worker reference.',
+    );
+  }
+  writeFileSync(p, after);
+  console.log('✓ threaded assets externalized → dist/movi-threaded.{wasm,worker.js}');
+}
+
 async function buildAll() {
   console.log('Building standalone modular bundles...\n');
 
   let builtSlim = false;
   for (const entry of entries) {
-    // Build ES format
+    // The Folegol pthread variant is browser-only; all published package
+    // entries keep their existing ESM+CJS contract.
     await buildEntry(entry, 'es');
+    if (!entry.threaded) {
+      await buildEntry(entry, 'cjs');
+    }
 
-    // Build CJS format
-    await buildEntry(entry, 'cjs');
-
-    if (entry.slim) builtSlim = true;
+    if (entry.slim && !entry.threaded) builtSlim = true;
     console.log(`✓ ${entry.name} built\n`);
   }
 
-  if (builtSlim) externalizeSlimWasm();
+  if (threadedOnly) externalizeThreadedAssets();
+  else if (builtSlim) externalizeSlimWasm();
 
   console.log('✓ All standalone bundles built successfully!');
 }

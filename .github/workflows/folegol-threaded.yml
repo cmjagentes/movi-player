@@ -1,0 +1,53 @@
+name: Folegol threaded Movi build
+
+on:
+  push:
+    branches:
+      - "folegol/threaded-wasm"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: folegol-threaded-movi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build threaded Movi
+        run: npm run build:threaded
+
+      - name: Verify pthread artifacts
+        run: |
+          test -s dist/element.threaded.js
+          test -s dist/movi-threaded.wasm
+          test -s dist/movi-threaded.worker.js
+          grep -q 'SharedArrayBuffer' dist/element.threaded.js
+          grep -q 'movi-threaded.wasm' dist/element.threaded.js
+          grep -q 'movi-threaded.worker.js' dist/element.threaded.js
+          sha256sum dist/element.threaded.js dist/movi-threaded.wasm dist/movi-threaded.worker.js | tee dist/FOLEGOL_THREADED_SHA256SUMS
+
+      - name: Commit immutable build assets
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/element.threaded.js dist/movi-threaded.wasm dist/movi-threaded.worker.js dist/FOLEGOL_THREADED_SHA256SUMS
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "build: publish Folegol threaded Movi assets [skip ci]"
+          git push

@@ -2,7 +2,24 @@
 set -e
 
 DAV1D_SRC=/opt/dav1d
-DAV1D_PREFIX=/src/dist/dav1d
+MOVI_THREADS="${MOVI_THREADS:-0}"
+
+if [ "$MOVI_THREADS" = "1" ]; then
+    DAV1D_PREFIX=/src/dist/dav1d-threaded
+    FFMPEG_PREFIX=${FFMPEG_PREFIX}-threaded
+    WASM_OUTPUT_DIR=/src/dist/wasm/threaded
+    THREAD_FFMPEG_FLAGS="-pthread -sUSE_PTHREADS=1"
+    THREAD_COMPILE_FLAGS=(-pthread -sUSE_PTHREADS=1)
+    THREAD_LINK_FLAGS=(-pthread -sUSE_PTHREADS=1 -sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency)
+    echo "=== Building threaded Movi WASM variant ==="
+else
+    DAV1D_PREFIX=/src/dist/dav1d
+    FFMPEG_PREFIX=${FFMPEG_PREFIX}
+    WASM_OUTPUT_DIR=/src/dist/wasm
+    THREAD_FFMPEG_FLAGS=""
+    THREAD_COMPILE_FLAGS=()
+    THREAD_LINK_FLAGS=()
+fi
 
 # Build dav1d for WASM (software AV1 decoder)
 if [ -z "$FORCE_DAV1D" ] && [ -f "${DAV1D_PREFIX}/lib/libdav1d.a" ]; then
@@ -32,6 +49,11 @@ cpu = 'wasm32'
 endian = 'little'
 EOF
 
+    if [ "$MOVI_THREADS" = "1" ]; then
+        sed -i "s/c_args = \['-Oz', '-flto', '-D_FILE_OFFSET_BITS=64'\]/c_args = ['-Oz', '-flto', '-D_FILE_OFFSET_BITS=64', '-pthread', '-sUSE_PTHREADS=1']/" /tmp/emscripten.txt
+        sed -i "s/c_link_args = \['-Oz', '-flto'\]/c_link_args = ['-Oz', '-flto', '-pthread', '-sUSE_PTHREADS=1']/" /tmp/emscripten.txt
+    fi
+
     # Configure dav1d for WASM
     meson setup build \
         --prefix=${DAV1D_PREFIX} \
@@ -49,15 +71,17 @@ EOF
     echo "=== Installing dav1d ==="
     ninja -C build install
 
-    # Strip PTHREADS flags from dav1d pkg-config — dav1d auto-enables threads
-    # for Emscripten but our WASM build uses USE_PTHREADS=0, causing FFmpeg
-    # configure to fail on conflicting flags.
-    sed -i 's/-s USE_PTHREADS=[0-9]*//g; s/-s PTHREAD_POOL_SIZE=[0-9]*//g' \
-        "${DAV1D_PREFIX}/lib/pkgconfig/dav1d.pc"
+    # The single-threaded build must strip dav1d's auto-enabled pthread flags.
+    # The threaded build intentionally preserves them so FFmpeg and dav1d share
+    # one pthread ABI.
+    if [ "$MOVI_THREADS" != "1" ]; then
+        sed -i 's/-s USE_PTHREADS=[0-9]*//g; s/-s PTHREAD_POOL_SIZE=[0-9]*//g' \
+            "${DAV1D_PREFIX}/lib/pkgconfig/dav1d.pc"
+    fi
 fi
 
-ls -R /src/dist/ffmpeg/lib || echo "Directory not found"
-if [ -z "$FORCE_FFMPEG" ] && [ -f "/src/dist/ffmpeg/lib/libavformat.a" ]; then
+ls -R ${FFMPEG_PREFIX}/lib || echo "Directory not found"
+if [ -z "$FORCE_FFMPEG" ] && [ -f "${FFMPEG_PREFIX}/lib/libavformat.a" ]; then
     if [ -d "${FFMPEG_SRC}" ]; then
         echo "FFmpeg Source Version:"
         cd ${FFMPEG_SRC} && (git describe --tags --always || echo "Unknown (git describe failed)")
@@ -90,7 +114,7 @@ else
     PKG_CONFIG_PATH="${DAV1D_PREFIX}/lib/pkgconfig" \
     emconfigure ./configure \
         --pkg-config=pkg-config \
-        --prefix=/src/dist/ffmpeg \
+        --prefix=${FFMPEG_PREFIX} \
         --target-os=none \
         --arch=x86_32 \
         --cc=emcc \
@@ -117,9 +141,9 @@ else
         --enable-decoder=h264,hevc,vp9,vp8,libdav1d,vvc,apv,mpeg1video,mpeg2video,mpeg4,h261,h263,h263p,mjpeg,dvvideo,theora,aac,aac_latm,mp3,mp2,mp1,opus,vorbis,flac,ac3,eac3,dca,truehd,mlp,pcm_s16le,pcm_s24le,pcm_s16be,pcm_f32le,pcm_mulaw,pcm_alaw,subrip,ass,ssa,mov_text,pgssub,dvbsub,dvdsub,webvtt,srt \
         --enable-parser=h264,hevc,vp8,vp9,av1,vvc,apv,lcevc,mpeg4video,mpegvideo,h261,h263,mjpeg,aac,mp3,opus,vorbis,flac,hdmv_pgs_subtitle \
         --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,vvc_mp4toannexb,vvc_metadata,av1_metadata,av1_frame_merge,av1_frame_split,lcevc_metadata,pgs_frame_merge,iso_media_metadata_manipulator,extract_extradata,vp9_superframe \
-        --extra-cflags="-Oz -flto -s USE_PTHREADS=0 -s USE_ZLIB=1 -D_FILE_OFFSET_BITS=64 -I${DAV1D_PREFIX}/include" \
-        --extra-cxxflags="-Oz -flto -s USE_ZLIB=1 -D_FILE_OFFSET_BITS=64 -I${DAV1D_PREFIX}/include" \
-        --extra-ldflags="-s WASM=1 -s USE_ZLIB=1 -Oz -flto -L${DAV1D_PREFIX}/lib"
+        --extra-cflags="-Oz -flto ${THREAD_FFMPEG_FLAGS} -s USE_ZLIB=1 -D_FILE_OFFSET_BITS=64 -I${DAV1D_PREFIX}/include" \
+        --extra-cxxflags="-Oz -flto ${THREAD_FFMPEG_FLAGS} -s USE_ZLIB=1 -D_FILE_OFFSET_BITS=64 -I${DAV1D_PREFIX}/include" \
+        --extra-ldflags="-s WASM=1 -s USE_ZLIB=1 -Oz -flto ${THREAD_FFMPEG_FLAGS} -L${DAV1D_PREFIX}/lib"
 
     echo "=== Compiling FFmpeg ==="
     emmake make -j$(nproc)
@@ -160,15 +184,17 @@ rm -rf "$OBJDIR"
 mkdir -p "$OBJDIR"
 
 C_COMMON_FLAGS=(
-    -I/src/dist/ffmpeg/include
+    -I${FFMPEG_PREFIX}/include
     -I${DAV1D_PREFIX}/include
     -Oz -flto -D_FILE_OFFSET_BITS=64
+    "${THREAD_COMPILE_FLAGS[@]}"
 )
 CXX_COMMON_FLAGS=(
     -I/src/wasm/signalsmith/signalsmith-stretch/include
     -I/src/wasm/signalsmith/signalsmith-linear/include
     -std=c++17 -fno-exceptions -fno-rtti
     -Oz -flto
+    "${THREAD_COMPILE_FLAGS[@]}"
 )
 
 for f in /src/wasm/*.c; do
@@ -186,7 +212,7 @@ done
 #                 WASM streams+compiles as a separate cached asset (the opt-in
 #                 "slim" build; consumers host the extra .wasm).
 LINK_FLAGS=(
-    -L/src/dist/ffmpeg/lib
+    -L${FFMPEG_PREFIX}/lib
     -L${DAV1D_PREFIX}/lib
     -lavformat -lavcodec -ldav1d -lavutil -lswresample -lswscale
     -Oz
@@ -224,6 +250,16 @@ LINK_FLAGS=(
     --closure 0
     --js-library /src/wasm/library_movi.js
 )
+LINK_FLAGS+=("${THREAD_LINK_FLAGS[@]}")
+
+if [ "$MOVI_THREADS" = "1" ]; then
+    mkdir -p "$WASM_OUTPUT_DIR"
+    em++ "$OBJDIR"/*.o "${LINK_FLAGS[@]}" \
+        -o "$WASM_OUTPUT_DIR/movi.js"
+    echo "=== Threaded build complete ==="
+    ls -la "$WASM_OUTPUT_DIR"
+    exit 0
+fi
 
 # Default build — WASM embedded (SINGLE_FILE). Unchanged output.
 em++ "$OBJDIR"/*.o "${LINK_FLAGS[@]}" \
